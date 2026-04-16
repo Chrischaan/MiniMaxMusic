@@ -1,0 +1,10 @@
+services:
+  minimax-music:
+    build: .
+    image: minimax-music:latest
+    container_name: minimax-music
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
