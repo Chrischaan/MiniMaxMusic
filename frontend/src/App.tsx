@@ -168,7 +168,22 @@ export default function App() {
 
   const busy = genStatus === 'pending'
   const hasPlayer = Boolean(audioUrl)
-  const lyricsStepNum = mode === 'cover' ? 3 : 1
+  const isCover = mode === 'cover'
+  const lyricsStepNum = isCover ? 2 : 1
+  const styleStepNum = isCover ? 3 : 2
+  const generateStepNum = isCover ? 4 : 3
+
+  const lyricsPanel = (
+    <Panel title={`Step ${lyricsStepNum} · 歌词${isCover ? '（可选）' : ''}`}>
+      <LyricsStep
+        lyrics={lyrics}
+        onLyricsChange={setLyrics}
+        onTitleChange={setTitle}
+        onStyleTagsFromLyrics={handleStyleTagsFromLyrics}
+        optional={isCover}
+      />
+    </Panel>
+  )
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800">
@@ -185,27 +200,17 @@ export default function App() {
         }`}
       >
         <div className="flex flex-col gap-6 lg:grid lg:grid-cols-[1.4fr_1fr] lg:gap-6 lg:items-start">
-          <Panel
-            title={`Step ${lyricsStepNum} · 歌词${mode === 'cover' ? '（可选）' : ''}`}
-            className="lg:sticky lg:top-6"
-          >
-            <LyricsStep
-              lyrics={lyrics}
-              onLyricsChange={setLyrics}
-              onTitleChange={setTitle}
-              onStyleTagsFromLyrics={handleStyleTagsFromLyrics}
-              optional={mode === 'cover'}
-            />
-          </Panel>
-
-          <div className="flex flex-col gap-6">
-            {mode === 'cover' && (
+          <div className="flex flex-col gap-6 lg:sticky lg:top-6">
+            {isCover && (
               <Panel title="Step 1 · 参考音频">
                 <CoverStep value={coverInput} onChange={setCoverInput} />
               </Panel>
             )}
+            {lyricsPanel}
+          </div>
 
-            <Panel title={`Step ${mode === 'cover' ? 2 : 2} · 曲风`}>
+          <div className="flex flex-col gap-6">
+            <Panel title={`Step ${styleStepNum} · 曲风`}>
               <StyleStep
                 selectedTags={selectedTags}
                 onToggleTag={toggleTag}
@@ -214,7 +219,7 @@ export default function App() {
               />
             </Panel>
 
-            <Panel title={`Step ${mode === 'cover' ? 4 : 3} · 生成`}>
+            <Panel title={`Step ${generateStepNum} · 生成`}>
               <button
                 onClick={handleGenerate}
                 disabled={busy}
@@ -222,7 +227,7 @@ export default function App() {
               >
                 {busy
                   ? '生成中，约需 30 秒...'
-                  : mode === 'cover'
+                  : isCover
                     ? '🎤 生成翻唱'
                     : '🎵 生成歌曲'}
               </button>
@@ -283,14 +288,12 @@ function ModeTabs({ mode, onChange }: { mode: Mode; onChange: (m: Mode) => void 
 function Panel({
   title,
   children,
-  className = '',
 }: {
   title: string
   children: React.ReactNode
-  className?: string
 }) {
   return (
-    <div className={`bg-white rounded-lg border shadow-sm p-5 ${className}`}>
+    <div className="bg-white rounded-lg border shadow-sm p-5">
       <div className="text-sm font-semibold text-gray-700 mb-3">{title}</div>
       {children}
     </div>

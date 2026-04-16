@@ -93,7 +93,9 @@ export default function LyricsStep({
       )}
 
       <textarea
-        className="w-full border rounded px-3 py-2 text-sm font-mono h-64 lg:h-[28rem] resize-none focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+        className={`w-full border rounded px-3 py-2 text-sm font-mono ${
+          optional ? 'h-40 lg:h-48' : 'h-64 lg:h-[28rem]'
+        } resize-none focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent`}
         placeholder={'[verse]\n在这里输入主歌歌词...\n\n[chorus]\n在这里输入副歌歌词...'}
         value={lyrics}
         onChange={(e) => onLyricsChange(e.target.value)}
