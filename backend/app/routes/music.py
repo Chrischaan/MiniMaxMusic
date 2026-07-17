@@ -19,8 +19,10 @@ router = APIRouter(prefix="/api", tags=["music"])
 
 class MusicRequest(BaseModel):
     prompt: str
-    lyrics: str
+    lyrics: str = ""
     title: str = ""
+    is_instrumental: bool = False
+    lyrics_optimizer: bool = False
 
 
 class MusicStartResponse(BaseModel):
@@ -34,9 +36,26 @@ class MusicStatusResponse(BaseModel):
     error: str = ""
 
 
-async def _run_music_task(task_id: str, prompt: str, lyrics: str) -> None:
+class CoverPreprocessResponse(BaseModel):
+    cover_feature_id: str
+    formatted_lyrics: str
+    audio_duration: float
+
+
+async def _run_music_task(
+    task_id: str,
+    prompt: str,
+    lyrics: str,
+    is_instrumental: bool,
+    lyrics_optimizer: bool,
+) -> None:
     try:
-        audio_bytes = await minimax_client.generate_music(prompt, lyrics)
+        audio_bytes = await minimax_client.generate_music(
+            prompt,
+            lyrics,
+            is_instrumental=is_instrumental,
+            lyrics_optimizer=lyrics_optimizer,
+        )
         tasks.set_done(task_id, audio_bytes)
     except Exception as exc:
         logger.exception("music generation failed")
@@ -49,12 +68,14 @@ async def _run_cover_task(
     lyrics: str,
     audio_bytes: bytes | None,
     audio_url: str | None,
+    cover_feature_id: str | None,
 ) -> None:
     try:
         result = await minimax_client.generate_cover(
             prompt,
             audio_bytes=audio_bytes,
             audio_url=audio_url,
+            cover_feature_id=cover_feature_id,
             lyrics=lyrics,
         )
         tasks.set_done(task_id, result)
@@ -63,18 +84,11 @@ async def _run_cover_task(
         tasks.set_failed(task_id, str(exc))
 
 
-@router.post("/cover", response_model=MusicStartResponse)
-async def post_cover(
-    background: BackgroundTasks,
-    prompt: str = Form(...),
-    lyrics: str = Form(""),
-    title: str = Form(""),
-    audio: UploadFile | None = File(None),
-    audio_url: str = Form(""),
-) -> MusicStartResponse:
-    if not prompt.strip():
-        raise HTTPException(status_code=400, detail="prompt cannot be empty")
-
+async def _read_cover_source(
+    audio: UploadFile | None,
+    audio_url: str,
+) -> tuple[bytes | None, str | None]:
+    """校验并读取翻唱参考音频（文件或 URL 二选一），返回 (audio_bytes, url)。"""
     has_file = audio is not None and audio.filename
     has_url = bool(audio_url.strip())
     if has_file == has_url:
@@ -82,9 +96,6 @@ async def post_cover(
             status_code=400,
             detail="provide exactly one of audio file or audio_url",
         )
-
-    audio_bytes: bytes | None = None
-    url_value: str | None = None
 
     if has_file:
         assert audio is not None
@@ -96,13 +107,71 @@ async def post_cover(
                 status_code=413,
                 detail=f"audio file exceeds 50 MB (got {len(audio_bytes) // (1024 * 1024)} MB)",
             )
+        return audio_bytes, None
+
+    url_value = audio_url.strip()
+    if not url_value.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="audio_url must be http(s)")
+    return None, url_value
+
+
+@router.post("/cover/preprocess", response_model=CoverPreprocessResponse)
+async def post_cover_preprocess(
+    audio: UploadFile | None = File(None),
+    audio_url: str = Form(""),
+) -> CoverPreprocessResponse:
+    audio_bytes, url_value = await _read_cover_source(audio, audio_url)
+
+    try:
+        result = await minimax_client.preprocess_cover(
+            audio_bytes=audio_bytes,
+            audio_url=url_value,
+        )
+    except Exception as exc:
+        logger.exception("cover preprocess failed")
+        raise HTTPException(status_code=502, detail=f"cover preprocess failed: {exc}")
+
+    return CoverPreprocessResponse(**result)
+
+
+@router.post("/cover", response_model=MusicStartResponse)
+async def post_cover(
+    background: BackgroundTasks,
+    prompt: str = Form(...),
+    lyrics: str = Form(""),
+    title: str = Form(""),
+    audio: UploadFile | None = File(None),
+    audio_url: str = Form(""),
+    cover_feature_id: str = Form(""),
+) -> MusicStartResponse:
+    if not prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt cannot be empty")
+
+    audio_bytes: bytes | None = None
+    url_value: str | None = None
+    feature_id = cover_feature_id.strip() or None
+
+    if feature_id:
+        # 两步翻唱：使用前处理返回的特征 ID，歌词必填（10–1000 字符）
+        has_file = audio is not None and audio.filename
+        if has_file or audio_url.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="cover_feature_id is mutually exclusive with audio file / audio_url",
+            )
+        lyrics_len = len(lyrics.strip())
+        if not (10 <= lyrics_len <= 1000):
+            raise HTTPException(
+                status_code=400,
+                detail=f"lyrics must be 10–1000 characters when using cover_feature_id (got {lyrics_len})",
+            )
     else:
-        url_value = audio_url.strip()
-        if not url_value.startswith(("http://", "https://")):
-            raise HTTPException(status_code=400, detail="audio_url must be http(s)")
+        audio_bytes, url_value = await _read_cover_source(audio, audio_url)
 
     task = tasks.create_task(title=title or "翻唱歌曲")
-    background.add_task(_run_cover_task, task.id, prompt, lyrics, audio_bytes, url_value)
+    background.add_task(
+        _run_cover_task, task.id, prompt, lyrics, audio_bytes, url_value, feature_id
+    )
     return MusicStartResponse(task_id=task.id)
 
 
@@ -110,11 +179,22 @@ async def post_cover(
 async def post_music(req: MusicRequest, background: BackgroundTasks) -> MusicStartResponse:
     if not req.prompt.strip():
         raise HTTPException(status_code=400, detail="prompt cannot be empty")
-    if not req.lyrics.strip():
-        raise HTTPException(status_code=400, detail="lyrics cannot be empty")
+    if not req.is_instrumental and not req.lyrics_optimizer and not req.lyrics.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="lyrics cannot be empty (or enable is_instrumental / lyrics_optimizer)",
+        )
 
-    task = tasks.create_task(title=req.title or "我的歌曲")
-    background.add_task(_run_music_task, task.id, req.prompt, req.lyrics)
+    default_title = "纯音乐" if req.is_instrumental else "我的歌曲"
+    task = tasks.create_task(title=req.title or default_title)
+    background.add_task(
+        _run_music_task,
+        task.id,
+        req.prompt,
+        req.lyrics,
+        req.is_instrumental,
+        req.lyrics_optimizer,
+    )
     return MusicStartResponse(task_id=task.id)
 
 

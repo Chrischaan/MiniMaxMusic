@@ -1,11 +1,16 @@
 # MiniMax Music 应用生成器
 
-一个基于 [MiniMax Music 2.6](https://platform.minimaxi.com/docs/api-reference/music-generation) 的 AI 音乐生成 Web 应用。支持从歌词 + 曲风生成原创歌曲，也支持上传参考音频进行翻唱。
+一个基于 [MiniMax Music 3.0](https://platform.minimaxi.com/docs/api-reference/music-generation) 的 AI 音乐生成 Web 应用。支持从歌词 + 曲风生成原创歌曲，也支持上传参考音频进行翻唱。
 
 ## 功能
 
-- **创作模式**：手动输入歌词，或用 AI 根据主题一键生成歌词
+- **创作模式**：三种演唱模式
+  - **歌词演唱**：手动输入歌词，或用 AI 根据主题一键生成歌词
+  - **AI 填词**（`lyrics_optimizer`）：只写曲风描述，模型自动填词并演唱
+  - **纯音乐**（`is_instrumental`）：生成不含人声的器乐作品
 - **翻唱模式**：上传参考音频文件（mp3/wav/flac）或粘贴音频 URL，生成同旋律的翻唱
+  - **一步翻唱**：直接生成，歌词从参考音频自动识别
+  - **两步翻唱**：先免费提取歌词（`music_cover_preprocess`），编辑歌词后再生成
 - **曲风选择**：15 个预设标签（情绪 / 风格 / 场景）+ 自定义补充
 - **在线播放**：生成后内嵌播放器，支持拖动进度条
 - **打包下载**：下载的 MP3 自带 ID3 标签 —— 封面图（1:1 裁剪，800×800 JPEG）+ 歌词（USLT）+ 标题
@@ -111,8 +116,9 @@ MiniMaxMusic/
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `POST` | `/api/lyrics` | AI 生成歌词（标题 / 曲风 / 正文） |
-| `POST` | `/api/music` | 提交创作任务，返回 `task_id` |
-| `POST` | `/api/cover` | 提交翻唱任务（multipart，文件或 URL） |
+| `POST` | `/api/music` | 提交创作任务，返回 `task_id`（支持 `is_instrumental` / `lyrics_optimizer`） |
+| `POST` | `/api/cover/preprocess` | 翻唱前处理：提取参考音频的歌词与特征（免费，`cover_feature_id` 有效期 24h） |
+| `POST` | `/api/cover` | 提交翻唱任务（multipart，文件 / URL / `cover_feature_id` 三选一） |
 | `GET` | `/api/music/{task_id}` | 轮询任务状态 |
 | `GET` | `/api/music/{task_id}/audio` | 获取音频流（支持 Range） |
 | `POST` | `/api/music/{task_id}/download` | 下载打标签的 MP3（封面 + 歌词 + 标题） |

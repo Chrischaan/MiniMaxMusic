@@ -4,10 +4,18 @@ import StyleStep from './components/StyleStep'
 import CoverStep, { type CoverInput } from './components/CoverStep'
 import CoverCropModal from './components/CoverCropModal'
 import Player from './components/Player'
-import { downloadTaggedMp3, pollMusic, startCover, startMusic } from './api'
+import {
+  downloadTaggedMp3,
+  pollMusic,
+  preprocessCover,
+  startCover,
+  startMusic,
+  type CoverSource,
+} from './api'
 
 type GenStatus = 'idle' | 'pending' | 'done' | 'failed'
 type Mode = 'create' | 'cover'
+type VocalMode = 'lyrics' | 'auto' | 'instrumental'
 
 function buildPrompt(tags: string[], custom: string): string {
   const parts = [...tags]
@@ -23,12 +31,17 @@ function buildPrompt(tags: string[], custom: string): string {
 
 export default function App() {
   const [mode, setMode] = useState<Mode>('create')
+  const [vocalMode, setVocalMode] = useState<VocalMode>('lyrics')
 
   const [lyrics, setLyrics] = useState('')
   const [title, setTitle] = useState('')
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [customStyle, setCustomStyle] = useState('')
   const [coverInput, setCoverInput] = useState<CoverInput | null>(null)
+
+  const [coverFeature, setCoverFeature] = useState<{ id: string; duration: number } | null>(null)
+  const [extracting, setExtracting] = useState(false)
+  const [extractError, setExtractError] = useState('')
 
   const [genStatus, setGenStatus] = useState<GenStatus>('idle')
   const [genError, setGenError] = useState('')
@@ -65,6 +78,31 @@ export default function App() {
 
   function handleStyleTagsFromLyrics(tags: string) {
     setCustomStyle(tags)
+  }
+
+  function handleCoverInputChange(value: CoverInput | null) {
+    setCoverInput(value)
+    // 参考音频变化后，之前提取的特征已过期，退回一步翻唱
+    setCoverFeature(null)
+    setExtractError('')
+  }
+
+  async function handleExtractLyrics() {
+    if (!coverInput) {
+      setExtractError('请先提供参考音频（上传文件或粘贴链接）')
+      return
+    }
+    setExtractError('')
+    setExtracting(true)
+    try {
+      const result = await preprocessCover(coverInput)
+      setCoverFeature({ id: result.cover_feature_id, duration: result.audio_duration })
+      setLyrics(result.formatted_lyrics)
+    } catch (err) {
+      setExtractError(err instanceof Error ? err.message : '提取失败')
+    } finally {
+      setExtracting(false)
+    }
   }
 
   function clearCover() {
@@ -109,15 +147,19 @@ export default function App() {
     }
 
     if (mode === 'create') {
-      if (!lyrics.trim()) {
+      if (vocalMode === 'lyrics' && !lyrics.trim()) {
         setGenError('歌词不能为空')
         return
       }
-    } else {
-      if (!coverInput) {
-        setGenError('请先提供参考音频（上传文件或粘贴链接）')
+    } else if (coverFeature) {
+      const len = lyrics.trim().length
+      if (len < 10 || len > 1000) {
+        setGenError(`两步翻唱模式下歌词需 10–1000 字（当前 ${len} 字）`)
         return
       }
+    } else if (!coverInput) {
+      setGenError('请先提供参考音频（上传文件或粘贴链接）')
+      return
     }
 
     setGenError('')
@@ -128,10 +170,20 @@ export default function App() {
     setGenStatus('pending')
 
     try {
-      const { task_id } =
-        mode === 'create'
-          ? await startMusic(prompt, lyrics, title)
-          : await startCover(coverInput!, prompt, lyrics, title)
+      let task_id: string
+      if (mode === 'create') {
+        const res = await startMusic(prompt, vocalMode === 'lyrics' ? lyrics : '', title, {
+          isInstrumental: vocalMode === 'instrumental',
+          lyricsOptimizer: vocalMode === 'auto',
+        })
+        task_id = res.task_id
+      } else {
+        const source: CoverSource = coverFeature
+          ? { kind: 'feature', featureId: coverFeature.id }
+          : coverInput!
+        const res = await startCover(source, prompt, lyrics, title)
+        task_id = res.task_id
+      }
 
       setTaskId(task_id)
       startPolling(task_id)
@@ -173,15 +225,29 @@ export default function App() {
   const styleStepNum = isCover ? 3 : 2
   const generateStepNum = isCover ? 4 : 3
 
+  const showLyricsEditor = isCover || vocalMode === 'lyrics'
+  const lyricsPanelTitle = isCover
+    ? `Step ${lyricsStepNum} · 歌词${coverFeature ? '（已提取，可编辑）' : '（可选）'}`
+    : `Step ${lyricsStepNum} · 歌词`
+
   const lyricsPanel = (
-    <Panel title={`Step ${lyricsStepNum} · 歌词${isCover ? '（可选）' : ''}`}>
-      <LyricsStep
-        lyrics={lyrics}
-        onLyricsChange={setLyrics}
-        onTitleChange={setTitle}
-        onStyleTagsFromLyrics={handleStyleTagsFromLyrics}
-        optional={isCover}
-      />
+    <Panel title={lyricsPanelTitle}>
+      {!isCover && <VocalModeSelector value={vocalMode} onChange={setVocalMode} />}
+      {showLyricsEditor ? (
+        <LyricsStep
+          lyrics={lyrics}
+          onLyricsChange={setLyrics}
+          onTitleChange={setTitle}
+          onStyleTagsFromLyrics={handleStyleTagsFromLyrics}
+          optional={isCover && !coverFeature}
+        />
+      ) : (
+        <div className="rounded-lg bg-purple-50 border border-purple-100 px-4 py-3 text-sm text-purple-800">
+          {vocalMode === 'auto'
+            ? '✨ AI 智能填词已开启：无需输入歌词，模型将根据曲风描述自动创作歌词并演唱。'
+            : '🎹 纯音乐模式：生成不含人声的器乐作品，请在曲风中描述乐器、情绪与场景。'}
+        </div>
+      )}
     </Panel>
   )
 
@@ -203,7 +269,38 @@ export default function App() {
           <div className="flex flex-col gap-6 lg:sticky lg:top-6">
             {isCover && (
               <Panel title="Step 1 · 参考音频">
-                <CoverStep value={coverInput} onChange={setCoverInput} />
+                <CoverStep value={coverInput} onChange={handleCoverInputChange} />
+                <div className="mt-4 pt-4 border-t">
+                  {coverFeature ? (
+                    <div className="flex items-center justify-between gap-3 rounded-lg bg-green-50 border border-green-200 px-4 py-3 text-sm">
+                      <span className="text-green-800">
+                        ✅ 已提取歌词（{Math.round(coverFeature.duration)} 秒）· 可在下方编辑后生成翻唱
+                      </span>
+                      <button
+                        onClick={() => setCoverFeature(null)}
+                        className="text-xs text-gray-500 hover:text-gray-700 underline shrink-0"
+                      >
+                        放弃编辑
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <button
+                        onClick={handleExtractLyrics}
+                        disabled={!coverInput || extracting}
+                        className="w-full border border-purple-300 text-purple-700 text-sm font-medium px-4 py-2 rounded-lg hover:bg-purple-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {extracting ? '提取中，约需 30 秒...' : '🔍 提取歌词（免费 · 可编辑后翻唱）'}
+                      </button>
+                      <div className="text-xs text-gray-400">
+                        不提取则直接翻唱，歌词将从参考音频自动识别
+                      </div>
+                    </div>
+                  )}
+                  {extractError && (
+                    <div className="mt-2 text-sm text-red-500">{extractError}</div>
+                  )}
+                </div>
               </Panel>
             )}
             {lyricsPanel}
@@ -229,7 +326,9 @@ export default function App() {
                   ? '生成中，约需 30 秒...'
                   : isCover
                     ? '🎤 生成翻唱'
-                    : '🎵 生成歌曲'}
+                    : vocalMode === 'instrumental'
+                      ? '🎹 生成纯音乐'
+                      : '🎵 生成歌曲'}
               </button>
               {genError && <div className="mt-2 text-sm text-red-500">{genError}</div>}
             </Panel>
@@ -245,6 +344,7 @@ export default function App() {
               title={finalTitle}
               coverPreview={coverPreview}
               onOpenCover={() => setCoverModalOpen(true)}
+              onTitleChange={setFinalTitle}
               onDownload={handleDownload}
               downloading={downloading}
             />
@@ -260,6 +360,37 @@ export default function App() {
         onClose={() => setCoverModalOpen(false)}
         onConfirm={handleCoverConfirm}
       />
+    </div>
+  )
+}
+
+function VocalModeSelector({
+  value,
+  onChange,
+}: {
+  value: VocalMode
+  onChange: (v: VocalMode) => void
+}) {
+  const options: Array<[VocalMode, string]> = [
+    ['lyrics', '📝 歌词演唱'],
+    ['auto', '✨ AI 填词'],
+    ['instrumental', '🎹 纯音乐'],
+  ]
+  return (
+    <div className="inline-flex bg-gray-100 rounded-lg p-1 mb-4">
+      {options.map(([v, label]) => (
+        <button
+          key={v}
+          onClick={() => onChange(v)}
+          className={`px-3 py-1.5 text-sm font-medium rounded-md transition ${
+            value === v
+              ? 'bg-white text-purple-600 shadow'
+              : 'text-gray-600 hover:text-gray-800'
+          }`}
+        >
+          {label}
+        </button>
+      ))}
     </div>
   )
 }

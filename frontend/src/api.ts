@@ -34,15 +34,27 @@ export async function generateLyrics(prompt: string): Promise<LyricsResult> {
   return handle<LyricsResult>(resp)
 }
 
+export interface MusicOptions {
+  isInstrumental?: boolean
+  lyricsOptimizer?: boolean
+}
+
 export async function startMusic(
   prompt: string,
   lyrics: string,
   title: string,
+  opts: MusicOptions = {},
 ): Promise<{ task_id: string }> {
   const resp = await fetch('/api/music', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, lyrics, title }),
+    body: JSON.stringify({
+      prompt,
+      lyrics,
+      title,
+      is_instrumental: opts.isInstrumental ?? false,
+      lyrics_optimizer: opts.lyricsOptimizer ?? false,
+    }),
   })
   return handle<{ task_id: string }>(resp)
 }
@@ -52,7 +64,32 @@ export async function pollMusic(taskId: string): Promise<MusicStatus> {
   return handle<MusicStatus>(resp)
 }
 
-export type CoverSource = { kind: 'file'; file: File } | { kind: 'url'; url: string }
+export type CoverSource =
+  | { kind: 'file'; file: File }
+  | { kind: 'url'; url: string }
+  | { kind: 'feature'; featureId: string }
+
+export interface CoverPreprocessResult {
+  cover_feature_id: string
+  formatted_lyrics: string
+  audio_duration: number
+}
+
+export async function preprocessCover(
+  source: Exclude<CoverSource, { kind: 'feature' }>,
+): Promise<CoverPreprocessResult> {
+  const form = new FormData()
+  if (source.kind === 'file') {
+    form.append('audio', source.file)
+  } else {
+    form.append('audio_url', source.url)
+  }
+  const resp = await fetch('/api/cover/preprocess', {
+    method: 'POST',
+    body: form,
+  })
+  return handle<CoverPreprocessResult>(resp)
+}
 
 export async function downloadTaggedMp3(
   taskId: string,
@@ -93,8 +130,10 @@ export async function startCover(
   form.append('title', title)
   if (source.kind === 'file') {
     form.append('audio', source.file)
-  } else {
+  } else if (source.kind === 'url') {
     form.append('audio_url', source.url)
+  } else {
+    form.append('cover_feature_id', source.featureId)
   }
   const resp = await fetch('/api/cover', {
     method: 'POST',
